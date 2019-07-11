@@ -1,4 +1,5 @@
 
+import sys
 import time
 import src.algorithms.fastsinksource as fastsinksource
 import src.algorithms.alg_utils as alg_utils
@@ -10,6 +11,8 @@ from collections import defaultdict
 from scipy import sparse
 import networkx as nx
 from scipy.sparse import csr_matrix
+sys.path.append('../FastSinkSource')
+import src.setup_sparse_networks as setup
 
 def setupInputs(run_obj):
     # may need to make sure the inputs match
@@ -46,8 +49,12 @@ def setupInputs(run_obj):
         run_obj.parent_full_ann = run_obj.orig_ann
         run_obj.child_full_ann = run_obj.orig_ann
     # if the matchings considered are HPO-GO
-    #else:
-    
+    else:
+        go_pos_neg_file = '../hpo-prediction/inputs/pos-neg/2018-08-all/go-pos-neg-50-list.tsv'
+        go_ann_matrix, goids = setup.setup_sparse_annotations(go_pos_neg_file, None, run_obj.net_obj.nodes)
+        run_obj.parent_full_ann = go_ann_matrix
+        run_obj.child_full_ann = run_obj.orig_ann    
+
     return
 
 def compute_degree(W, factor, axis = 1):
@@ -189,19 +196,30 @@ def run(run_obj):
 
     degree_pair = {}
 
+    go_pos_neg_file = '../hpo-prediction/inputs/pos-neg/' + \
+        '2018-08-all/go-pos-neg-50-list.tsv'
+    go_ann_matrix, goids = setup.setup_sparse_annotations(go_pos_neg_file,
+        None, run_obj.net_obj.nodes)
+    goidx = {g: i for i, g in enumerate(goids)}
+
     # TODO: add the file to the config file and use that
     # this file contains the child-parent pairs along with a weight containing the itss score
     with open(params['matchings_file'], "r") as f:
         reader = csv.reader(f, delimiter=',')
+        line_num = 0 # used to track header
         for row in reader:
+            if line_num == 0: # skip the header
+                line_num += 1
+                continue
             if(params['matching_hpo']) :
-                pairs[hpoidx[row[0]]] = hpoidx[row[1]]
-                par.append(hpoidx[row[1]])
+                pairs[hpoidx[row[0]]] = goidx[row[1]]
+                par.append(goidx[row[1]])
                 child.append(hpoidx[row[0]])
-            #else:
-                # set the value of corresponding key to be index mapping for GO term   
+            else:
+                pairs[hpoidx[row[0]]] = goidx[row[1]]
             if params['itss_scores'] == True:
                 degree_pair[hpoidx[row[0]]] = float(row[2])
+            line_num += 1
 
      
     # used later to add the scores of the parent terms to the matrix
@@ -222,17 +240,14 @@ def run(run_obj):
 
     # get each child in the child-parent pairs dictionary
     for idx, c in enumerate(pairs.keys()):
-        print(idx)
         
         # store the parent of the given child term
         parent = pairs[c]
 
         # store the hpoids of the parent and child terms
-        hpoid_par = run_obj.goids[parent]
+        hpoid_par = goids[parent]
         hpoid_child = run_obj.goids[c]
 
-        print(hpoid_child, hpoid_par)
-        
         #TODO: revert back to using the setUpPair function
         # if itss scores are to be used then degree_pair[c] is to be used as the weight of an edge
 
@@ -266,7 +281,7 @@ def run(run_obj):
         
          
         # For every negative annotation that has become unknown in the current fold annotations of the child term
-            # erase the annotation of the corresponding gene from the parent term as well.
+        # erase the annotation of the corresponding gene from the parent term as well.
 
 
         # get the child terms original annotations
@@ -307,12 +322,16 @@ def run(run_obj):
             run_obj.count += 1
         
         # call fastsinksource on the parent term using the positive negative indices from the dictionary/above updated indices
-        
+       
         parent_scores, process_time, wall_time, iters = fastsinksource.runFastSinkSource(
                 P, positives_par, negatives=negatives_par, max_iters=max_iters,
                 eps=eps, a=a, verbose=run_obj.kwargs.get('verbose', False))
-        
 
+        '''
+        scores, process_time, wall_time, iters = fastsinksource.runFastSinkSource(
+            P, positives, negatives=negatives, max_iters=max_iters,
+            eps=eps, a=a, verbose=run_obj.kwargs.get('verbose', False))
+        '''
 
         tqdm.write("\t%s Parent Term converged after %d iterations " % (alg, iters) +
                 "(%0.4f sec) for %s" % (process_time, hpoid_par))
@@ -341,7 +360,7 @@ def run(run_obj):
         # the child term FastSinkSource is called with the new normalized adjacency matrix 
         scores, process_time, wall_time, iters = fastsinksource.runFastSinkSource(
                 new_P, positives, negatives=negatives, max_iters=max_iters,
-                eps=eps, a=a, verbose=run_obj.kwargs.get('verbose', False),  scores = parent_scores)
+                eps=eps, a=a, verbose=run_obj.kwargs.get('verbose', False))
         
 
         sanity_scores, process_time, wall_time, iters = fastsinksource.runFastSinkSource(
@@ -380,8 +399,6 @@ def run(run_obj):
 
             goid_scores[term] = parent_scores
     
-    print(goid_scores.shape)
-
     # store the scores in the runner object of the algorithm
     run_obj.goid_scores = goid_scores
     run_obj.params_results = params_results
